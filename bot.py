@@ -23,8 +23,21 @@ bot = discord.Client()
 l = multiprocessing.Lock()
 annlock = multiprocessing.Lock()
 
+num_emoji_dict = {"0":"0️⃣",
+                 "1":"1️⃣",
+                 "2":"2️⃣",
+                 "3":"3️⃣",
+                 "4":"4️⃣",
+                 "5":"5️⃣",
+                 "6":"6️⃣",
+                 "7":"7️⃣",
+                 "8":"8️⃣",
+                 "9":"9️⃣"}
+
+emojiconvert = lambda integ: [num_emoji_dict[i] for i in str(integ)]
+
 class betinstance():
-    def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0):
+    def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0, user_bet_on = None):
         self.o = outer
         self.cid = channelid
         self.uid = id
@@ -36,10 +49,12 @@ class betinstance():
         self.wincount = 0
         self.winbank = []
         self.offset = offset
-    def roll(self, kval, kname):
-        print(f"bet registered - {kval}, current state - {self.rollcount, self.wincount, self.winbank}")
+        self.user_bet_on = None
+    def roll(self, kval, kname, bettor_id):
+        
 
-        if self.rollcount < self.rollmax:
+        if (self.rollcount < self.rollmax) and (True if self.user_bet_on is None else (self.user_bet_on == bettor_id)):
+            print(f"bet registered - {kval}, current state - {self.rollcount, self.wincount, self.winbank}")
             self.rollcount += 1
             # print(self.offset)
             if (kval >= 100) and (self.rollcount > self.offset):
@@ -59,10 +74,10 @@ class discordbot():
         self.zombie_bets = []
         self.bets_to_remove = []
         self.accouncement_queue = []
-    def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0):
+    def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0, user_bet_on = None):
         # figure out how to value returns on 20 value bets across x rolls, with 15 rolls being 300 payout
         # add current bet instance with counter and list of rolls
-        self.current_bets[uid] = betinstance(uid, name, channel, self, betted_rolls, bet_val, offset)
+        self.current_bets[uid] = betinstance(uid, name, channel, self, betted_rolls, bet_val, offset, user_bet_on = user_bet_on)
     
     def get_out_early(self, uid):
         if uid in self.current_bets:
@@ -117,7 +132,7 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
     for currentbetname, currentbet in db.current_bets.items():
         # print(bet_channel_id, currentbet.cid, accepted_bet_channel)
         if bet_channel_id == accepted_bet_channel or currentbet.cid == bet_channel_id:
-            currentbet.roll(kval, kname)
+            currentbet.roll(kval, kname, None)
 
     for n in db.bets_to_remove:
         if n in db.current_bets:
@@ -182,8 +197,10 @@ async def on_message(message):
         #someone was rolled
         e = message.embeds[0]
         desc = message.embeds[0].description
+        # print(message.type)
+        # print("called by", bot.get_channel(message.channel.id).get_partial_message(message.reference.message_id).author.name)
         if not type(e.author.name) == discord.embeds._EmptyEmbed:
-            if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name)): #really shit way to make sure it was a roll
+            if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
                 bet_channel_id = message.channel.id
                 if "**" in e.description:
                     kval = int(re.search("(?P<word>\*\*\d+\*\*)", e.description).group().strip("**")) #change for wishes and owneds
@@ -253,12 +270,17 @@ async def on_message(message):
                 vflag = False
 
         if vflag:
-
-            if not ((message.author.id in db.current_bets) or (message.author.id in [i[0] for i in db.zombie_bets])):
+            zflag = message.author.id in [i[0] for i in db.zombie_bets]
+            if not ((message.author.id in db.current_bets) or zflag):
                 uname = message.author.name if message.author.nick is None else message.author.nick
                 
                 if int(db.get_current_balance(message.author.id)) > -10_000:
-                    db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset)
+
+                    if len(message.mentions) == 1:
+                        print("betting on - ", message.mentions[0].id)
+                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on = message.mentions[0].id)
+                    else:
+                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset)
                     print(f"betting started for user {message.author.id}")
                     # channel = bot.get_channel(bet_channel_id)
                     await message.add_reaction("✅")
@@ -266,8 +288,16 @@ async def on_message(message):
                     await message.add_reaction("❌")
                 # await channel.send(f"betting started for user {uname}")
             else:
-                # uname = message.author.name if message.author.nick is None else message.author.nick
-                await message.add_reaction("♻️")
+                if zflag:
+                    await message.add_reaction("⏸️")
+                    remaining_rolls = int([b[1] for b in db.zombie_bets if b[0] == message.author.id][0]) + 1
+                    if remaining_rolls == 11:
+                        await message.add_reaction("🕚")
+                    else:
+                        for e in emojiconvert(remaining_rolls):
+                            await message.add_reaction(e)
+                else:
+                    await message.add_reaction("♻️")
                 # channel = bot.get_channel(bet_channel_id)
                 # await channel.send(f"betting already exists for user {uname}")
 
