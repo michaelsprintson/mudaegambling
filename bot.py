@@ -19,6 +19,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 prob = 0.003
 bot = discord.Client()
+l = multiprocessing.Lock()
 
 class betinstance():
     def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0):
@@ -55,6 +56,7 @@ class discordbot():
         self.current_bets = {}
         self.zombie_bets = []
         self.bets_to_remove = []
+        self.accouncement_queue = []
     def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0):
         # figure out how to value returns on 20 value bets across x rolls, with 15 rolls being 300 payout
         # add current bet instance with counter and list of rolls
@@ -106,21 +108,22 @@ async def on_ready():
 
 # EVENT LISTENER FOR WHEN A NEW MESSAGE IS SENT TO A CHANNEL.
 
-async def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919163906):
+def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919163906):
+    l.acquire()
+    print("acquiring")
     print(kname, "rolled with value", kval)
     for currentbetname, currentbet in db.current_bets.items():
         # print(bet_channel_id, currentbet.cid, accepted_bet_channel)
         if bet_channel_id == accepted_bet_channel or currentbet.cid == bet_channel_id:
             currentbet.roll(kval, kname)
-            
 
     for n in db.bets_to_remove:
         if n in db.current_bets:
             bet = db.current_bets[n]
-            channel = bot.get_channel(bet.cid)
             prize = (-1 - (1-(prob*bet.rnum))*(-bet.betval)) / (prob*bet.rnum)
             win = int((bet.wincount * prize) - ((bet.rnum-bet.wincount)*bet.betval))
-            await channel.send(f"betting concluded, {bet.name} won = {win}! Characters qualified: {bet.winbank}")
+            db.accouncement_queue.append((bet.cid, f"betting concluded, {bet.name} won = {win}! Characters qualified: {bet.winbank}"))
+            print(f"added {bet.name} to announcmeents")
             db.update_balance(bet.uid, bet.name, win)
             db.current_bets.pop(n)
             if bet.rollcount < 15:
@@ -130,6 +133,8 @@ async def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994
     db.zombie_bets = [tup for tup in db.zombie_bets if not tup[1] == 0]
     for tup in db.zombie_bets:
         tup[1] -= 1
+    print("releasing")
+    l.release()
 
 @bot.event
 async def on_message(message):
@@ -171,7 +176,11 @@ async def on_message(message):
                 if "**" in e.description:
                     kval = int(re.search("(?P<word>\*\*\d+\*\*)", e.description).group().strip("**")) #change for wishes and owneds
                     kname = e.author.name
-                    await process_bet(kname, kval, bet_channel_id)
+                    process_bet(kname, kval, bet_channel_id)
+                    for ann in db.accouncement_queue:
+                        channel = bot.get_channel(ann[0])
+                        await channel.send(ann[1])
+                    db.accouncement_queue = []
 
     if (message.content[0:11] == "$checkprize"):
         channel = bot.get_channel(message.channel.id)
@@ -196,7 +205,11 @@ async def on_message(message):
         kval = int(message.content.split()[1])
         kname = message.content.split()[2]
         
-        await process_bet(kname, kval, bet_channel_id)
+        process_bet(kname, kval, bet_channel_id)
+        for ann in db.accouncement_queue:
+            channel = bot.get_channel(ann[0])
+            await channel.send(ann[1])
+        db.accouncement_queue = []
     
     if (message.content[0:15] == "$adminupdatebal") and (message.author.id == 138336085703917568):
         kval = int(message.content.split()[1])
