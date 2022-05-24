@@ -12,6 +12,7 @@ import pandas as pd
 import dataframe_image as dfi
 import random
 import multiprocessing
+import copy
 # Loads the .env file that resides on the same level as the script.
 load_dotenv()
 # Grab the API token from the .env file.
@@ -20,6 +21,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 prob = 0.003
 bot = discord.Client()
 l = multiprocessing.Lock()
+annlock = multiprocessing.Lock()
 
 class betinstance():
     def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0):
@@ -136,6 +138,16 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
     print("releasing")
     l.release()
 
+async def announce():
+    annlock.acquire()
+    localann = copy.copy(db.accouncement_queue)
+    db.accouncement_queue = []
+    annlock.release()
+    for ann in localann:
+        channel = bot.get_channel(ann[0])
+        await channel.send(ann[1])
+    
+
 @bot.event
 async def on_message(message):
 	# CHECKS IF THE MESSAGE THAT WAS SENT IS EQUAL TO "HELLO".
@@ -177,10 +189,7 @@ async def on_message(message):
                     kval = int(re.search("(?P<word>\*\*\d+\*\*)", e.description).group().strip("**")) #change for wishes and owneds
                     kname = e.author.name
                     process_bet(kname, kval, bet_channel_id)
-                    for ann in db.accouncement_queue:
-                        channel = bot.get_channel(ann[0])
-                        await channel.send(ann[1])
-                    db.accouncement_queue = []
+                    await announce()
 
     if (message.content[0:11] == "$checkprize"):
         channel = bot.get_channel(message.channel.id)
@@ -206,10 +215,7 @@ async def on_message(message):
         kname = message.content.split()[2]
         
         process_bet(kname, kval, bet_channel_id)
-        for ann in db.accouncement_queue:
-            channel = bot.get_channel(ann[0])
-            await channel.send(ann[1])
-        db.accouncement_queue = []
+        await announce()
     
     if (message.content[0:15] == "$adminupdatebal") and (message.author.id == 138336085703917568):
         kval = int(message.content.split()[1])
