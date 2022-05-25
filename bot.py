@@ -2,9 +2,9 @@
 # Import the os module.
 import os
 import discord
-import pickle
 import re
 import json
+from datetime import datetime as dt
 # Import load_dotenv function from dotenv module.
 from dotenv import load_dotenv
 from numpy import roll
@@ -37,6 +37,24 @@ num_emoji_dict = {"0":"0️⃣",
                  "9":"9️⃣"}
 
 emojiconvert = lambda integ: [num_emoji_dict[i] for i in str(integ)]
+
+class rollinstance():
+    def __init__(self):
+        print("started roll instance")
+        self.start_time = dt.now()
+        self.banned_ids = []
+        self.rollcount = 0
+    def add_roll(self, do_something):
+        if (self.rollcount < 15) and (do_something):
+            self.rollcount += 1
+            print("rollcount updated", self.rollcount)
+            return 0
+        elif not do_something:
+            return 0
+        else:
+            return 1
+    def is_expired(self):
+        return int((dt.now() - self.start_time).seconds) > 3600
 
 class betinstance():
     def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0, user_bet_on = None):
@@ -77,6 +95,8 @@ class discordbot():
         self.zombie_bets = []
         self.bets_to_remove = []
         self.accouncement_queue = []
+        self.current_roll_sessions = {}
+        self.roll_session_zombies = {}
     def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0, user_bet_on = None):
         # figure out how to value returns on 20 value bets across x rolls, with 15 rolls being 300 payout
         # add current bet instance with counter and list of rolls
@@ -132,6 +152,12 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
     l.acquire()
     # print("acquiring")
     print(kname, "rolled with value", kval)
+    print("current roll counts", [(n,s.rollcount) for n,s in db.current_roll_sessions.items()])
+
+
+    if not bettor_id in set(db.current_roll_sessions.keys()):
+        db.current_roll_sessions[bettor_id] = rollinstance()
+
     for currentbetname, currentbet in db.current_bets.items():
         # print(bet_channel_id, currentbet.cid, accepted_bet_channel)
         if bet_channel_id == accepted_bet_channel or currentbet.cid == bet_channel_id:
@@ -146,13 +172,20 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
             print(f"added {bet.name} to announcmeents")
             db.update_balance(bet.uid, bet.name, win)
             db.current_bets.pop(n)
-            if bet.rollcount < 15:
-                db.zombie_bets.append(list([n, (15-bet.rollcount), bet]))
+            if (bet.rollcount < 15):
+                if (bet.user_bet_on is None):
+                    db.zombie_bets.append(list([n, (15-bet.rollcount), bet]))
+                else:
+                    db.roll_session_zombies.append(bet)
+
     db.bets_to_remove = []
 
-    db.zombie_bets = [tup for tup in db.zombie_bets if not tup[1] == 0]
-    for tup in db.zombie_bets:
-        tup[1] -= 1
+    db.zombie_bets = [[tup[0], tup[1]+1, tup[2]] for tup in db.zombie_bets if not tup[1] == 0]
+
+    db.current_roll_sessions = {id:ri for id,ri in db.current_roll_sessions.items() if (ri.add_roll(id == bettor_id) == 0) and (not ri.is_expired())}
+    
+    db.roll_session_zombies = [i for i in db.roll_session_zombies if (i.user_bet_on in db.current_roll_sessions)]
+    
     # print("releasing")
     l.release()
 
@@ -207,7 +240,7 @@ async def on_message(message):
         caller = message.interaction.user.id if not (message.interaction is None) else None
 
         # if not type(e.author.name) == discord.embeds._EmptyEmbed:
-        if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
+        if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("disablelist" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
             bet_channel_id = message.channel.id
             if "**" in e.description:
                 s = re.search("(?P<word>\*\*\d+\*\*)", e.description)
@@ -291,7 +324,8 @@ async def on_message(message):
 
         if vflag:
             zflag = message.author.id in [i[0] for i in db.zombie_bets]
-            if not ((message.author.id in db.current_bets) or zflag):
+            zuflag = message.author.id in [bet.uid for bet in db.roll_session_zombies if (bet.user_bet_on == ubo)]
+            if not ((message.author.id in db.current_bets) or zflag or zuflag):
                 uname = message.author.name if message.author.nick is None else message.author.nick
                 
                 if int(db.get_current_balance(message.author.id)) > -10_000:
@@ -305,8 +339,19 @@ async def on_message(message):
                 # await channel.send(f"betting started for user {uname}")
             else:
                 if zflag:
+                    print("zflag tripped")
                     await message.add_reaction("⏸️")
                     remaining_rolls = int([b[1] for b in db.zombie_bets if b[0] == message.author.id][0]) + 1
+                    if remaining_rolls == 11:
+                        await message.add_reaction("🕚")
+                    else:
+                        for e in emojiconvert(remaining_rolls):
+                            await message.add_reaction(e)
+                elif zuflag: 
+                    print("zuflag tripped")
+                    await message.add_reaction("⏸️")
+                    remaining_rolls = 15 - db.current_roll_sessions[[bet for bet in db.roll_session_zombies if (bet.uid == message.author.id and (ubo == bet.user_bet_on))][0].user_bet_on].rollcount
+                    print(remaining_rolls)
                     if remaining_rolls == 11:
                         await message.add_reaction("🕚")
                     else:
