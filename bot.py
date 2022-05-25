@@ -19,7 +19,9 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 prob = 0.003
-bot = discord.Client()
+intents = discord.Intents.default()
+intents.message_content = True
+bot = discord.Client(intents=intents)
 l = multiprocessing.Lock()
 annlock = multiprocessing.Lock()
 
@@ -49,10 +51,11 @@ class betinstance():
         self.wincount = 0
         self.winbank = []
         self.offset = offset
-        self.user_bet_on = None
+        self.user_bet_on = user_bet_on
     def roll(self, kval, kname, bettor_id):
         
-
+        print("betting on ", self.user_bet_on)
+        print("bettor", bettor_id)
         if (self.rollcount < self.rollmax) and (True if self.user_bet_on is None else (self.user_bet_on == bettor_id)):
             print(f"bet registered - {kval}, current state - {self.rollcount, self.wincount, self.winbank}")
             self.rollcount += 1
@@ -125,14 +128,14 @@ async def on_ready():
 
 # EVENT LISTENER FOR WHEN A NEW MESSAGE IS SENT TO A CHANNEL.
 
-def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919163906):
+def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919163906, bettor_id = None):
     l.acquire()
-    print("acquiring")
+    # print("acquiring")
     print(kname, "rolled with value", kval)
     for currentbetname, currentbet in db.current_bets.items():
         # print(bet_channel_id, currentbet.cid, accepted_bet_channel)
         if bet_channel_id == accepted_bet_channel or currentbet.cid == bet_channel_id:
-            currentbet.roll(kval, kname, None)
+            currentbet.roll(kval, kname, bettor_id)
 
     for n in db.bets_to_remove:
         if n in db.current_bets:
@@ -150,7 +153,7 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
     db.zombie_bets = [tup for tup in db.zombie_bets if not tup[1] == 0]
     for tup in db.zombie_bets:
         tup[1] -= 1
-    print("releasing")
+    # print("releasing")
     l.release()
 
 async def announce():
@@ -166,6 +169,7 @@ async def announce():
 @bot.event
 async def on_message(message):
 	# CHECKS IF THE MESSAGE THAT WAS SENT IS EQUAL TO "HELLO".
+
     if (message.content[0:10] == "$adminecho") and (message.author.id == 138336085703917568):
         kname = message.content.split()[1]
         channel = bot.get_channel(message.channel.id)
@@ -193,19 +197,24 @@ async def on_message(message):
         dfi.export(test,f"{ri}.png")
         await channel.send(file=discord.File(f"{ri}.png"))
 
+   
     if (len(message.embeds) > 0) and (message.author.id == 432610292342587392): #and (message.author.name == "Mudae"): #make sure this is only from mudae
         #someone was rolled
+
+        
         e = message.embeds[0]
         desc = message.embeds[0].description
-        # print(message.type)
-        # print("called by", bot.get_channel(message.channel.id).get_partial_message(message.reference.message_id).author.name)
-        if not type(e.author.name) == discord.embeds._EmptyEmbed:
-            if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
-                bet_channel_id = message.channel.id
-                if "**" in e.description:
-                    kval = int(re.search("(?P<word>\*\*\d+\*\*)", e.description).group().strip("**")) #change for wishes and owneds
+        caller = message.interaction.user.id if not (message.interaction is None) else None
+
+        # if not type(e.author.name) == discord.embeds._EmptyEmbed:
+        if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
+            bet_channel_id = message.channel.id
+            if "**" in e.description:
+                s = re.search("(?P<word>\*\*\d+\*\*)", e.description)
+                if not s is None:
+                    kval = int(s.group().strip("**")) #change for wishes and owneds
                     kname = e.author.name
-                    process_bet(kname, kval, bet_channel_id)
+                    process_bet(kname, kval, bet_channel_id, bettor_id = caller)
                     await announce()
 
     if (message.content[0:11] == "$checkprize"):
@@ -225,13 +234,13 @@ async def on_message(message):
             await message.add_reaction("❌")
     
     if (message.content[0:8] == "$fakebet"):
-        
+        caller = message.author.id
         # $fakebet kval kname
         bet_channel_id = message.channel.id
         kval = int(message.content.split()[1])
         kname = message.content.split()[2]
         
-        process_bet(kname, kval, bet_channel_id)
+        process_bet(kname, kval, bet_channel_id, bettor_id = caller)
         await announce()
     
     if (message.content[0:15] == "$adminupdatebal") and (message.author.id == 138336085703917568):
@@ -243,15 +252,26 @@ async def on_message(message):
         # $bet rolls val
         bet_channel_id = message.channel.id
         vflag = True
+        offset = 0
+        ubo = None
         try:
             mcs = message.content.split()
             rolls = int(mcs[1]) #make sure to be between 1 and 15
             value_per_roll = int(mcs[2]) #make sure to be between 1 and 20
-            offset = int(mcs[3]) if len(mcs) > 3 else 0
+            if len(mcs) > 3:
+                if (mcs[3][0] != "<"):
+                    offset = int(mcs[3])
+                    print("offset is ", offset)
+                else:
+                    if (len(message.mentions) == 1):
+                        ubo = message.mentions[0].id
+                        print("ubo is", ubo)
+
             if (rolls + offset) > 15:
                 vflag = False
                 await message.add_reaction("❌")
         except Exception as e:
+            print(e)
             vflag = False
             await message.add_reaction("❌")
             # channel = bot.get_channel(bet_channel_id)
@@ -276,12 +296,8 @@ async def on_message(message):
                 
                 if int(db.get_current_balance(message.author.id)) > -10_000:
 
-                    if len(message.mentions) == 1:
-                        print("betting on - ", message.mentions[0].id)
-                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on = message.mentions[0].id)
-                    else:
-                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset)
-                    print(f"betting started for user {message.author.id}")
+                    db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on=ubo)
+                    print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
                     # channel = bot.get_channel(bet_channel_id)
                     await message.add_reaction("✅")
                 else:
@@ -302,5 +318,4 @@ async def on_message(message):
                 # await channel.send(f"betting already exists for user {uname}")
 
 
-# EXECUTES THE BOT WITH THE SPECIFIED TOKEN. TOKEN HAS BEEN REMOVED AND USED JUST AS AN EXAMPLE.
 bot.run(DISCORD_TOKEN)
