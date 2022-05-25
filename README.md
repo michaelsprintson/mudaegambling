@@ -24,6 +24,7 @@ Note that this does allow you to bet on someone else's rolls immediately, with n
 to bet: $bet [number of rolls to bet on (2-20)] [total bet size (100-1600)] [offset (optional)] [@user (optional)]
     note: offset is the number of rolls to skip before betting starts. For example, $bet 5 400 10 means "wait 10 rolls, then bet 400 total on the next 5 rolls".
     note: Bets will be of type General unless a specific user is mentioned. If mentioned, the bet will be of type User-specific.
+    note: If you recieve a pause emoji reaction, please wait the number of rolls mentioned to bet on that User-specific or a General bet again. If you recieve a pause emoji with no number attached, it means you are waitinig for a User-specific bet to expire.
 
 to cancel a bet: $betcancel 
     note: can only be done if no rolls were done between you sending $bet and $betcancel
