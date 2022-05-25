@@ -48,11 +48,10 @@ class rollinstance():
         if (self.rollcount < 15) and (do_something):
             self.rollcount += 1
             print("rollcount updated", self.rollcount)
-            return 0
-        elif not do_something:
-            return 0
-        else:
-            return 1
+            if self.rollcount == 15:
+                return 1
+        return 0
+
     def is_expired(self):
         return int((dt.now() - self.start_time).seconds) > 3600
 
@@ -324,16 +323,20 @@ async def on_message(message):
 
         if vflag:
             zflag = message.author.id in [i[0] for i in db.zombie_bets]
+            general_flag = message.author.id in [bet.uid for bet in db.roll_session_zombies]
             zuflag = message.author.id in [bet.uid for bet in db.roll_session_zombies if (bet.user_bet_on == ubo)]
             if not ((message.author.id in db.current_bets) or zflag or zuflag):
                 uname = message.author.name if message.author.nick is None else message.author.nick
                 
                 if int(db.get_current_balance(message.author.id)) > -10_000:
-
-                    db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on=ubo)
-                    print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
-                    # channel = bot.get_channel(bet_channel_id)
-                    await message.add_reaction("✅")
+                    print("genflag", general_flag)
+                    if not (general_flag and ubo == None):
+                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on=ubo)
+                        print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
+                        # channel = bot.get_channel(bet_channel_id)
+                        await message.add_reaction("✅")
+                    else:
+                        await message.add_reaction("⏸️")
                 else:
                     await message.add_reaction("❌")
                 # await channel.send(f"betting started for user {uname}")
