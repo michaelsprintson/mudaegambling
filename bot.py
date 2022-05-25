@@ -7,7 +7,9 @@ import json
 from datetime import datetime as dt
 # Import load_dotenv function from dotenv module.
 from dotenv import load_dotenv
-from numpy import roll
+import numpy as np
+from math import comb
+from sympy import symbols, solve
 import pandas as pd
 import dataframe_image as dfi
 import random
@@ -18,7 +20,7 @@ load_dotenv()
 # Grab the API token from the .env file.
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-prob = 0.003
+prob = 0.06
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
@@ -56,7 +58,8 @@ class rollinstance():
         return int((dt.now() - self.start_time).seconds) > 3600
 
 class betinstance():
-    def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 20, offset = 0, user_bet_on = None):
+    def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 300, offset = 0, user_bet_on = None):
+
         self.o = outer
         self.cid = channelid
         self.uid = id
@@ -96,6 +99,14 @@ class discordbot():
         self.accouncement_queue = []
         self.current_roll_sessions = {}
         self.roll_session_zombies = {}
+
+    def calc_bet_multiplier(self, bet_val):
+        expected_result = lambda r_n, bet_val, w_m: sum([comb(r_n,w)*((prob)**w)*((1-prob)**(r_n-w))*(-(r_b:=bet_val/r_n)*(r_n-w)+w*r_b*w_m) for w in range(0,r_n)])
+
+        x = symbols('x')
+
+        return {i:solve(expected_result(i, bet_val,x) + 5)[0] for i in range(3,16)}
+
     def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0, user_bet_on = None):
         # figure out how to value returns on 20 value bets across x rolls, with 15 rolls being 300 payout
         # add current bet instance with counter and list of rolls
@@ -165,8 +176,13 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = 967994638919
     for n in db.bets_to_remove:
         if n in db.current_bets:
             bet = db.current_bets[n]
-            prize = (-1 - (1-(prob*bet.rnum))*(-bet.betval)) / (prob*bet.rnum)
-            win = int((bet.wincount * prize) - ((bet.rnum-bet.wincount)*bet.betval))
+            prize = db.calc_bet_multiplier(bet.betval)[bet.rnum] * (bet.betval / bet.rnum)
+            print(db.calc_bet_multiplier(bet.betval)[bet.rnum])
+            print(bet.rnum)
+            print(bet.wincount)
+            print(bet.betval)
+            print(prize)
+            win = int((bet.wincount * prize) - ((bet.rnum-bet.wincount)*(bet.betval/bet.rnum)))
             db.accouncement_queue.append((bet.cid, f"betting concluded, {bet.name} won = {win}! Characters qualified: {bet.winbank}"))
             print(f"added {bet.name} to announcmeents")
             db.update_balance(bet.uid, bet.name, win)
@@ -256,7 +272,10 @@ async def on_message(message):
         bet_channel_id = message.channel.id
         rolls = int(message.content.split()[1])
         value = int(message.content.split()[2])
-        await channel.send(f"{(-1 - (1-(prob*rolls))*(-value)) / (prob*rolls)}")
+
+        b = db.calc_bet_multiplier(value)[rolls] * (value / rolls)
+
+        await channel.send(f"{b}")
 
     if (message.content[0:10] == "$betcancel"):
         response = db.get_out_early(message.author.id)
@@ -289,7 +308,7 @@ async def on_message(message):
         try:
             mcs = message.content.split()
             rolls = int(mcs[1]) #make sure to be between 1 and 15
-            value_per_roll = int(mcs[2]) #make sure to be between 1 and 20
+            total_bet = int(mcs[2]) #make sure to be between 1 and 20
             if len(mcs) > 3:
                 if (mcs[3][0] != "<"):
                     offset = int(mcs[3])
@@ -310,12 +329,12 @@ async def on_message(message):
             # await channel.send(f"please put in valid bet and roll numbers")
 
         if vflag: 
-            if (rolls < 3) or (rolls > 20):
+            if (rolls < 3) or (rolls > 15):
                 await message.add_reaction("❌")
                 # channel = bot.get_channel(bet_channel_id)
                 # await channel.send(f"please put in a reasonable bet number (1-20)")
                 vflag = False
-            if (value_per_roll < 2) or (value_per_roll > 100):
+            if (total_bet < 100) or (total_bet > 1500):
                 await message.add_reaction("❌")
                 # channel = bot.get_channel(bet_channel_id)
                 # await channel.send(f"please put in a reasonable bet per roll (2-100)")
@@ -331,7 +350,7 @@ async def on_message(message):
                 if int(db.get_current_balance(message.author.id)) > -10_000:
                     print("genflag", general_flag)
                     if not (general_flag and ubo == None):
-                        db.initialize_betting(message.author.id,uname, bet_channel_id, value_per_roll, rolls, offset, user_bet_on=ubo)
+                        db.initialize_betting(message.author.id,uname, bet_channel_id, total_bet, rolls, offset, user_bet_on=ubo)
                         print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
                         # channel = bot.get_channel(bet_channel_id)
                         await message.add_reaction("✅")
