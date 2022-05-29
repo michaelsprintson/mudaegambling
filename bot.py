@@ -19,17 +19,19 @@ from functools import reduce
 from time import sleep
 import ast
 from collections import defaultdict
+import math
 
 BET_CHANNEL = 967994638919163906
 ADMIN_ID = 138336085703917568
 MUDAE_ID = 432610292342587392
+DEFAULT_PROB = 0.06
 
 # Loads the .env file that resides on the same level as the script.
 load_dotenv()
 # Grab the API token from the .env file.
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-prob = 0.06
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
@@ -56,6 +58,37 @@ def partial_to_full(pd):
 	pd['hx'] = pd['ha'] + pd['hg']
 	pd['wx'] = pd['wa'] + pd['wg']
 	return pd
+
+def partial_to_full_c(pd):
+	pd.set('ma' ,pd.get('wa') + pd.get('ha'))
+	pd.set('mg' ,pd.get('wg') + pd.get('hg'))
+	pd.set('mx' ,pd.get('ma') + pd.get('mg'))
+	pd.set('hx' ,pd.get('ha') + pd.get('hg'))
+	pd.set('wx' ,pd.get('wa') + pd.get('wg'))
+	return pd
+
+class cached_dict():
+	def __init__(self, storage_loc =  "storage_dicts/disable.json", intkeys = False):
+		self.storage_loc = storage_loc
+		self.internal_dict = {}
+		if os.path.exists(storage_loc):
+			stored_dict = json.load(open(storage_loc, 'r'))
+			for k,d in stored_dict.items():
+				if intkeys:
+					self.internal_dict[int(k)] = d
+				else:
+					self.internal_dict[k] = d
+	
+	def update_total(self, new_dict):
+		self.internal_dict = new_dict
+		json.dump(self.internal_dict, open(self.storage_loc, 'w'))
+
+	def set(self, item, value):
+		self.internal_dict[item] = value
+		json.dump(self.internal_dict, open(self.storage_loc, 'w'))
+	
+	def get(self, item):
+		return self.internal_dict[item]
 
 class rollinstance():
 	def __init__(self):
@@ -118,9 +151,13 @@ class discordbot():
 		self.roll_session_zombies = {}
 
 		self.roll_types = ['wa', 'ha', 'wg', 'hg', 'ma', 'mg', 'wx', 'hx', 'mx']
-		self.left = {rt:0 for rt in self.roll_types}
-		self.total = {rt:0 for rt in self.roll_types}
-		self.disable_lists = defaultdict(lambda :{rt:0 for rt in self.roll_types})
+		self.left = cached_dict("storage_dicts/left.json")
+		self.total = cached_dict("storage_dicts/total.json")
+		self.total_last_scraped = (len(self.left.internal_dict) + len(self.total.internal_dict)) == 18
+		self.disable_lists = cached_dict("storage_dicts/disable.json", intkeys=True)
+
+		self.wish_info = cached_dict("storage_dicts/wishchances.json", intkeys=True)
+		self.last_wish_caller = None
 
 		with open(bs_loc, "r") as f:
 			data = f.readlines()[0]
@@ -146,15 +183,26 @@ class discordbot():
 		self.over_cien = partial_to_full(self.over_cien)
 
 		self.last_db_caller = None
-		self.total_last_scraped = False
+		
 	
 	def get_prob_for_bet(self, bet_type, dl):
-		print("oc", self.over_cien[bet_type])
-		print("total", self.total[bet_type])
-		print("left", self.left[bet_type])
-		return np.around(self.over_cien[bet_type]* (1-(dl[bet_type]/self.total[bet_type])) / self.calc_pool(self.left[bet_type], dl[bet_type], self.total[bet_type], 6), decimals = 4)
+
+		return np.around(self.over_cien[bet_type]* (1-(dl[bet_type]/self.total.get(bet_type))) / self.calc_pool(self.left.get(bet_type), dl[bet_type], self.total.get(bet_type), 6), decimals = 4)
 	
-	def calc_bet_multiplier(self, bet_val):
+	def get_prob_for_wish(self, bet_type, dl, wls, wb, fwb, wp = 5000):
+		# print('wp', wp)
+		# print('wls', wls)
+		# print('wb', wb)
+		# print("fwb", fwb)
+		# print('left', self.left[bet_type])
+		# print('total', self.total[bet_type])
+		# print('disable', dl[bet_type])
+
+
+		return np.around((1/wp) + (wls*(1 + (wb/100)) + (fwb/100)) / self.calc_pool(self.left.get(bet_type), dl[bet_type], self.total.get(bet_type), 6), decimals = 4)
+
+
+	def calc_bet_multiplier(self, bet_val, prob):
 		expected_result = lambda r_n, bet_val, w_m: sum([comb(r_n,w)*((prob)**w)*((1-prob)**(r_n-w))*(-(r_b:=bet_val/r_n)*(r_n-w)+w*r_b*w_m) for w in range(0,r_n)])
 
 		x = symbols('x')
@@ -205,7 +253,7 @@ async def on_ready():
 
 # EVENT LISTENER FOR WHEN A NEW MESSAGE IS SENT TO A CHANNEL.
 
-def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = BET_CHANNEL, roller_id = None):
+def process_bet(kname, kval, roll_type, bet_channel_id, accepted_bet_channel = BET_CHANNEL, roller_id = None):
 	l.acquire()
 	# print("acquiring")
 	print(kname, "rolled with value", kval)
@@ -223,7 +271,15 @@ def process_bet(kname, kval, bet_channel_id, accepted_bet_channel = BET_CHANNEL,
 	for n in db.bets_to_remove:
 		if n in db.current_bets:
 			bet = db.current_bets[n]
-			prize = db.calc_bet_multiplier(bet.betval)[bet.rnum] * (bet.betval / bet.rnum)
+			p = DEFAULT_PROB
+			if db.total_last_scraped:
+				# if roll_type in db.roll_types:
+				if roller_id in set(db.disable_lists.internal_dict.keys()):
+					p = db.get_prob_for_bet(roll_type, db.disable_lists.get(roller_id.id))
+				
+					
+			prize = db.calc_bet_multiplier(bet.betval, p)[bet.rnum] * (bet.betval / bet.rnum)
+			print(f"probability for {roll_type} is {p}, prize is {prize}")
 			win = int((bet.wincount * prize) - ((bet.rnum-bet.wincount)*(bet.betval/bet.rnum)))
 			db.accouncement_queue.append((bet.cid, f"betting concluded, {bet.name} won = {win}! Characters qualified: {bet.winbank}"))
 			print(f"added {bet.name} to announcmeents")
@@ -288,41 +344,68 @@ async def on_message(message):
 		await channel.send(file=discord.File(f"{ri}.png"))
 
 	if (message.author.id == MUDAE_ID):
+		if ("<:wlslot:633217442151137280>" in message.content):
+			all_lines = [i for i in message.content.split("\n") if "<:wlslot:633217442151137280>" in i]
+			wl_slots = 7
+			extra_p = 0
+			extra_fw_p = 0
+			for l in all_lines:
+				if "Wishlist slots:" in l:
+					s = re.search("\*\*\+(?P<wlslots>\d+)\*\*", l)
+					if not s is None:
+						wl_slots += int(s.group('wlslots'))
+				if "Spawn bonus for wishes:" in l:
+					print(l)
+					s = re.search("\*\*\+(?P<wlslots>\d+)\%\*\*", l)
+					if not s is None:
+						extra_p = int(s.group('wlslots'))
+				if "$firstwish" in l:
+					s = re.search("\*\*\+(?P<wlslots>\d+)\%\*\*", l)
+					if not s is None:
+						extra_fw_p = int(s.group('wlslots'))
+			db.wish_info.set(db.last_wish_caller, [wl_slots, extra_p, extra_fw_p])
+			await message.add_reaction("✅")
+
 		if ("<:Phosph:498523296799653889> **Including:**" in message.content):
 			ls = [i.split(">")[1] for i in message.content.split("\n\n")[0].split("\n")]
 			found_num = [int(i) for i in re.findall("\d+",ls[0])]
-			db.left['wa'] = found_num[0]
-			db.total['wa'] = found_num[1]
-			db.left['wg'] = found_num[2]
-			db.total['wg'] = found_num[3]
+			db.left.set('wa', found_num[0])
+			db.total.set('wa', found_num[1])
+			db.left.set('wg', found_num[2])
+			db.total.set('wg', found_num[3])
 			found_num = [int(i) for i in re.findall("\d+",ls[1])]
-			db.left['ha'] = found_num[0]
-			db.total['ha'] = found_num[1]
-			db.left['hg'] = found_num[2]
-			db.total['hg'] = found_num[3]
+			db.left.set('ha', found_num[0])
+			db.total.set('ha', found_num[1])
+			db.left.set('hg', found_num[2])
+			db.total.set('hg', found_num[3])
 
-			db.left = partial_to_full(db.left)
-			db.total = partial_to_full(db.total)
+			partial_to_full_c(db.left)
+			partial_to_full_c(db.total)
 
 			print("left and total dictionaries acquired")
+			await message.add_reaction("✅")
 			db.total_last_scraped = True
 
-	if (message.content[0:3] == "$dl"):
+	if (message.content[0:3] == "$dl") or (message.content[0:12] == "$disablelist"):
 		db.last_db_caller = message.author.id
+	
+	if (message.content[0:6] == "$bonus"):
+		db.last_wish_caller = message.author.id
 
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID):
 		e = message.embeds[0]
 		if 'disablelist' in e.author.name:
 			fs = message.embeds[0].description.split("\n\n")[0].split("\n")[0]
 			found_num = [int(i) for i in re.findall("\d+",fs)][1:]
-			db.disable_lists[db.last_db_caller]['wa'] = found_num[0]
-			db.disable_lists[db.last_db_caller]['ha'] = found_num[1]
-			db.disable_lists[db.last_db_caller]['wg'] = found_num[2]
-			db.disable_lists[db.last_db_caller]['hg'] = found_num[3]
-			db.disable_lists[db.last_db_caller] = partial_to_full(db.disable_lists[db.last_db_caller])
+			db.disable_lists.set(db.last_db_caller, {})
+			db.disable_lists.get(db.last_db_caller)['wa'] = found_num[0]
+			db.disable_lists.get(db.last_db_caller)['ha'] = found_num[1]
+			db.disable_lists.get(db.last_db_caller)['wg'] = found_num[2]
+			db.disable_lists.get(db.last_db_caller)['hg'] = found_num[3]
+			db.disable_lists.set(db.last_db_caller, partial_to_full(db.disable_lists.get(db.last_db_caller)))
 			ch = bot.get_channel(message.channel.id)
 			print("disable dictionaries acquired for user", db.last_db_caller)
-			await ch.send(f"disable dictionaries acquired for user {db.last_db_caller}")
+			await message.add_reaction("✅")
 			db.last_db_caller = None
 
 	if (message.content[0:10] == "$checkprob"):
@@ -333,11 +416,34 @@ async def on_message(message):
 		roll_type = message.content.split()[1]
 		if db.total_last_scraped:
 			if roll_type in db.roll_types:
-				if message.author.id in set(db.disable_lists.keys()):
-					print(db.disable_lists[message.author.id])
-					p = db.get_prob_for_bet(roll_type, db.disable_lists[message.author.id])
+				if message.author.id in set(db.disable_lists.internal_dict.keys()):
+					p = db.get_prob_for_bet(roll_type, db.disable_lists.get(message.author.id))
 
 					await channel.send(f"{p}")
+				else:
+					await channel.send("please do $dl so the bot can get a record of your disablelist")
+			else:
+				await channel.send(f"please input a valid roll type (dont use $)")
+		else:
+			await channel.send(f"please do $left so the bot can get the values")
+	
+	if (message.content[0:14] == "$checkwishprob"):
+		channel = bot.get_channel(message.channel.id)
+		
+		# $fakebet kval kname
+		bet_channel_id = message.channel.id
+		roll_type = message.content.split()[1]
+		if db.total_last_scraped:
+			if roll_type in db.roll_types:
+				if message.author.id in set(db.disable_lists.internal_dict.keys()):
+					if message.author.id in set(db.wish_info.internal_dict.keys()):
+						wish_info_list = db.wish_info.get(message.author.id)
+						print(wish_info_list)
+						p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wish_info_list[0], wish_info_list[1], wish_info_list[2])
+						prob_fifteen = sum([(math.factorial(15) / (math.factorial(15-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(15-z)) for z in range(1,16)])
+						await channel.send(f"{p}, across 15 rolls: {prob_fifteen}")
+					else:
+						await channel.send("please do $bonus so the bot can get a record of your bonus list")	
 				else:
 					await channel.send("please do $dl so the bot can get a record of your disablelist")
 			else:
@@ -362,7 +468,7 @@ async def on_message(message):
 				if not s is None:
 					kval = int(s.group().strip("**")) #change for wishes and owneds
 					kname = e.author.name
-					process_bet(kname, kval, bet_channel_id, bettor_id = caller)
+					process_bet(kname, kval, message.interaction.name.strip(), bet_channel_id, roller_id = caller)
 					await announce()
 
 	if (message.content[0:11] == "$checkprize"):
@@ -373,9 +479,9 @@ async def on_message(message):
 		rolls = int(message.content.split()[1])
 		value = int(message.content.split()[2])
 
-		b = db.calc_bet_multiplier(value)[rolls] * (value / rolls)
+		b = db.calc_bet_multiplier(value, DEFAULT_PROB)[rolls] * (value / rolls)
 
-		await channel.send(f"{b}")
+		await channel.send(f"{b} - this is for a wa roll with harvey's pinned disablelist / ad")
 
 	if (message.content[0:10] == "$betcancel"):
 		response = db.get_out_early(message.author.id)
@@ -390,8 +496,9 @@ async def on_message(message):
 		bet_channel_id = message.channel.id
 		kval = int(message.content.split()[1])
 		kname = message.content.split()[2]
+		rolltype = message.content.split()[3]
 		
-		process_bet(kname, kval, bet_channel_id, bettor_id = caller)
+		process_bet(kname, kval, rolltype, bet_channel_id, roller_id = caller)
 		await announce()
 	
 	if (message.content[0:15] == "$adminupdatebal") and (message.author.id == ADMIN_ID):
@@ -402,6 +509,7 @@ async def on_message(message):
 	if (message.content[0:5] == "$bet "):
 		# $bet rolls val
 		bet_channel_id = message.channel.id
+		channel = bot.get_channel(message.channel.id)
 		vflag = True
 		offset = 0
 		ubo = None
@@ -451,7 +559,14 @@ async def on_message(message):
 					print("genflag", general_flag)
 					if not (general_flag and ubo == None):
 						db.initialize_betting(message.author.id,uname, bet_channel_id, total_bet, rolls, offset, user_bet_on=ubo)
+							# if roll_type in db.roll_types:
+						dl = message.author.id in set(db.disable_lists.internal_dict.keys())
+						if not dl:
+							await channel.send(f"Note: until the bettor calls $dl, all rolls for this bet will be handled with default probability")
+						if not db.total_last_scraped:
+							await channel.send(f"Note: until $left is called, all rolls for this bet will be handled with default probability")
 						print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
+							
 						# channel = bot.get_channel(bet_channel_id)
 						await message.add_reaction("✅")
 					else:
