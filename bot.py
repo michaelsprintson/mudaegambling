@@ -356,7 +356,7 @@ async def on_message(message):
 		if ("<:addroll:633217436044492801>" in message.content):
 			add_roll_line = [i for i in message.content.split("\n") if "<:addroll:633217436044492801>" in i][0]
 			s = re.search("\*\*\+(?P<adrolls>\d+)\*\*", add_roll_line).group("adrolls")
-			db.roll_nums.set(message.author.id, s)
+			db.roll_nums.set(db.last_wish_caller, s)
 		if ("<:wlslot:633217442151137280>" in message.content):
 			all_lines = [i for i in message.content.split("\n") if "<:wlslot:633217442151137280>" in i]
 			wl_slots = 7
@@ -603,6 +603,7 @@ async def on_message(message):
 				elif zuflag: 
 					print("zuflag tripped")
 					await message.add_reaction("⏸️")
+					print((int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0))
 					remaining_rolls = DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0) - db.current_roll_sessions[[bet for bet in db.roll_session_zombies if (bet.uid == message.author.id and (ubo == bet.user_bet_on))][0].user_bet_on].rollcount
 					print(remaining_rolls)
 					if remaining_rolls == 11:
