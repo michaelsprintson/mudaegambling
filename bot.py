@@ -25,6 +25,7 @@ BET_CHANNEL = 967994638919163906
 ADMIN_ID = 138336085703917568
 MUDAE_ID = 432610292342587392
 DEFAULT_PROB = 0.06
+DEFAULT_ROLL_NUM = 15
 
 # Loads the .env file that resides on the same level as the script.
 load_dotenv()
@@ -90,17 +91,18 @@ class cached_dict():
 	def get(self, item):
 		return self.internal_dict[item]
 
-class rollinstance():
-	def __init__(self):
+class rollinstance(): 
+	def __init__(self, rb = 0):
 		print("started roll instance")
 		self.start_time = dt.now()
 		self.banned_ids = []
 		self.rollcount = 0
+		self.rollbonus = rb
 	def add_roll(self, do_something):
-		if (self.rollcount < 15) and (do_something):
+		if (self.rollcount < DEFAULT_ROLL_NUM + self.rollbonus) and (do_something):
 			self.rollcount += 1
-			print("rollcount updated", self.rollcount)
-			if self.rollcount == 15:
+			# print("rollcount updated", self.rollcount)
+			if self.rollcount == (DEFAULT_ROLL_NUM + self.rollbonus):
 				return 1
 		return 0
 
@@ -108,7 +110,7 @@ class rollinstance():
 		return int((dt.now() - self.start_time).seconds) > 3600
 
 class betinstance():
-	def __init__(self, id, name, channelid, outer, rollnum = 15, betval = 300, offset = 0, user_bet_on = None):
+	def __init__(self, id, name, channelid, outer, rollnum = DEFAULT_ROLL_NUM, betval = 300, offset = 0, user_bet_on = None):
 
 		self.o = outer
 		self.cid = channelid
@@ -124,8 +126,8 @@ class betinstance():
 		self.user_bet_on = user_bet_on
 	def roll(self, kval, kname, bettor_id):
 		
-		print("betting on ", self.user_bet_on)
-		print("bettor", bettor_id)
+		# print("betting on ", self.user_bet_on)
+		# print("bettor", bettor_id)
 		if (self.rollcount < self.rollmax) and (True if self.user_bet_on is None else (self.user_bet_on == bettor_id)):
 			print(f"bet registered - {kval}, current state - {self.rollcount, self.wincount, self.winbank}")
 			self.rollcount += 1
@@ -155,10 +157,20 @@ class discordbot():
 		self.total = cached_dict("storage_dicts/total.json")
 		self.total_last_scraped = (len(self.left.internal_dict) + len(self.total.internal_dict)) == 18
 		self.disable_lists = cached_dict("storage_dicts/disable.json", intkeys=True)
+		self.roll_nums = cached_dict("storage_dicts/roll_nums.json", intkeys=True)
 
 		self.wish_info = cached_dict("storage_dicts/wishchances.json", intkeys=True)
 		self.last_wish_caller = None
 
+		self.calc_pool = lambda chars_left, dldsize, chars_total, p_rare: chars_left - dldsize + ((1-(chars_left/chars_total))**p_rare)*chars_total
+		self.over_cien = cached_dict("storage_dicts/oc.json")
+		if len(self.over_cien.internal_dict) == 0:
+			self.over_cien.update_total(self.get_over_cien(bs_loc))
+
+		self.last_db_caller = None
+		
+	def get_over_cien(self, bs_loc):
+		print("calculating...")
 		with open(bs_loc, "r") as f:
 			data = f.readlines()[0]
 		series_list = {(k:=list((d:=ast.literal_eval(i + "}}}}")).keys())[0]):d[k] for i in data.split("}}}}")[:-1]}
@@ -166,12 +178,11 @@ class discordbot():
 		char_df = pd.DataFrame(char_dict).T
 		char_df['term'] = char_df['term'].apply(lambda x: [x] if type(x) != list else x)
 
-		self.calc_pool = lambda chars_left, dldsize, chars_total, p_rare: chars_left - dldsize + ((1-(chars_left/chars_total))**p_rare)*chars_total
 		search_for_char = lambda a, df: df[df['term'].apply(lambda t: sum([a in tt for tt in t]) > 0)]
 
 		over_cien_df = char_df[char_df['val']>83]
 
-		self.over_cien = {"wa":len(search_for_char('wa',over_cien_df)),
+		over_cien = {"wa":len(search_for_char('wa',over_cien_df)),
 		"ha":len(search_for_char('ha',over_cien_df)),
 		"ma":0,
 		"wg":len(search_for_char('wg',over_cien_df)),
@@ -180,14 +191,11 @@ class discordbot():
 		"wx":0,
 		"hx":0,
 		"mx":0,}
-		self.over_cien = partial_to_full(self.over_cien)
-
-		self.last_db_caller = None
-		
+		return partial_to_full(over_cien)
 	
 	def get_prob_for_bet(self, bet_type, dl):
 
-		return np.around(self.over_cien[bet_type]* (1-(dl[bet_type]/self.total.get(bet_type))) / self.calc_pool(self.left.get(bet_type), dl[bet_type], self.total.get(bet_type), 6), decimals = 4)
+		return np.around(self.over_cien.get(bet_type)* (1-(dl[bet_type]/self.total.get(bet_type))) / self.calc_pool(self.left.get(bet_type), dl[bet_type], self.total.get(bet_type), 6), decimals = 4)
 	
 	def get_prob_for_wish(self, bet_type, dl, wls, wb, fwb, wp = 5000):
 		# print('wp', wp)
@@ -203,13 +211,14 @@ class discordbot():
 
 
 	def calc_bet_multiplier(self, bet_val, prob):
+		print(bet_val, prob)
 		expected_result = lambda r_n, bet_val, w_m: sum([comb(r_n,w)*((prob)**w)*((1-prob)**(r_n-w))*(-(r_b:=bet_val/r_n)*(r_n-w)+w*r_b*w_m) for w in range(0,r_n)])
 
 		x = symbols('x')
+		print(expected_result(3, bet_val,x))
+		return {i:solve(expected_result(i, bet_val,x) + 5)[0] for i in range(3,DEFAULT_ROLL_NUM+1)}
 
-		return {i:solve(expected_result(i, bet_val,x) + 5)[0] for i in range(3,16)}
-
-	def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = 15, offset = 0, user_bet_on = None):
+	def initialize_betting(self, uid, name, channel, bet_val = 20, betted_rolls = DEFAULT_ROLL_NUM, offset = 0, user_bet_on = None):
 		# figure out how to value returns on 20 value bets across x rolls, with 15 rolls being 300 payout
 		# add current bet instance with counter and list of rolls
 		self.current_bets[uid] = betinstance(uid, name, channel, self, betted_rolls, bet_val, offset, user_bet_on = user_bet_on)
@@ -261,7 +270,7 @@ def process_bet(kname, kval, roll_type, bet_channel_id, accepted_bet_channel = B
 
 
 	if not roller_id in set(db.current_roll_sessions.keys()):
-		db.current_roll_sessions[roller_id] = rollinstance()
+		db.current_roll_sessions[roller_id] = rollinstance((int(db.roll_nums.get(roller_id)) if roller_id in db.roll_nums.internal_dict else 0))
 
 	for currentbetname, currentbet in db.current_bets.items():
 		# print(bet_channel_id, currentbet.cid, accepted_bet_channel)
@@ -275,7 +284,7 @@ def process_bet(kname, kval, roll_type, bet_channel_id, accepted_bet_channel = B
 			if db.total_last_scraped:
 				# if roll_type in db.roll_types:
 				if roller_id in set(db.disable_lists.internal_dict.keys()):
-					p = db.get_prob_for_bet(roll_type, db.disable_lists.get(roller_id.id))
+					p = db.get_prob_for_bet(roll_type, db.disable_lists.get(roller_id))
 				
 					
 			prize = db.calc_bet_multiplier(bet.betval, p)[bet.rnum] * (bet.betval / bet.rnum)
@@ -285,9 +294,9 @@ def process_bet(kname, kval, roll_type, bet_channel_id, accepted_bet_channel = B
 			print(f"added {bet.name} to announcmeents")
 			db.update_balance(bet.uid, bet.name, win)
 			db.current_bets.pop(n)
-			if (bet.rollcount < 15):
+			if (bet.rollcount < DEFAULT_ROLL_NUM): 
 				if (bet.user_bet_on is None):
-					db.zombie_bets.append(list([n, (15-bet.rollcount), bet]))
+					db.zombie_bets.append(list([n, (DEFAULT_ROLL_NUM-bet.rollcount), bet]))
 				else:
 					db.roll_session_zombies.append(bet)
 
@@ -344,6 +353,10 @@ async def on_message(message):
 		await channel.send(file=discord.File(f"{ri}.png"))
 
 	if (message.author.id == MUDAE_ID):
+		if ("<:addroll:633217436044492801>" in message.content):
+			add_roll_line = [i for i in message.content.split("\n") if "<:addroll:633217436044492801>" in i][0]
+			s = re.search("\*\*\+(?P<adrolls>\d+)\*\*", add_roll_line).group("adrolls")
+			db.roll_nums.set(message.author.id, s)
 		if ("<:wlslot:633217442151137280>" in message.content):
 			all_lines = [i for i in message.content.split("\n") if "<:wlslot:633217442151137280>" in i]
 			wl_slots = 7
@@ -355,7 +368,6 @@ async def on_message(message):
 					if not s is None:
 						wl_slots += int(s.group('wlslots'))
 				if "Spawn bonus for wishes:" in l:
-					print(l)
 					s = re.search("\*\*\+(?P<wlslots>\d+)\%\*\*", l)
 					if not s is None:
 						extra_p = int(s.group('wlslots'))
@@ -394,19 +406,20 @@ async def on_message(message):
 
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID):
 		e = message.embeds[0]
-		if 'disablelist' in e.author.name:
-			fs = message.embeds[0].description.split("\n\n")[0].split("\n")[0]
-			found_num = [int(i) for i in re.findall("\d+",fs)][1:]
-			db.disable_lists.set(db.last_db_caller, {})
-			db.disable_lists.get(db.last_db_caller)['wa'] = found_num[0]
-			db.disable_lists.get(db.last_db_caller)['ha'] = found_num[1]
-			db.disable_lists.get(db.last_db_caller)['wg'] = found_num[2]
-			db.disable_lists.get(db.last_db_caller)['hg'] = found_num[3]
-			db.disable_lists.set(db.last_db_caller, partial_to_full(db.disable_lists.get(db.last_db_caller)))
-			ch = bot.get_channel(message.channel.id)
-			print("disable dictionaries acquired for user", db.last_db_caller)
-			await message.add_reaction("✅")
-			db.last_db_caller = None
+		if not e.author is None:
+			if 'disablelist' in e.author.name:
+				fs = message.embeds[0].description.split("\n\n")[0].split("\n")[0]
+				found_num = [int(i) for i in re.findall("\d+",fs)][1:]
+				db.disable_lists.set(db.last_db_caller, {})
+				db.disable_lists.get(db.last_db_caller)['wa'] = found_num[0]
+				db.disable_lists.get(db.last_db_caller)['ha'] = found_num[1]
+				db.disable_lists.get(db.last_db_caller)['wg'] = found_num[2]
+				db.disable_lists.get(db.last_db_caller)['hg'] = found_num[3]
+				db.disable_lists.set(db.last_db_caller, partial_to_full(db.disable_lists.get(db.last_db_caller)))
+				ch = bot.get_channel(message.channel.id)
+				print("disable dictionaries acquired for user", db.last_db_caller)
+				await message.add_reaction("✅")
+				db.last_db_caller = None
 
 	if (message.content[0:10] == "$checkprob"):
 		channel = bot.get_channel(message.channel.id)
@@ -440,8 +453,9 @@ async def on_message(message):
 						wish_info_list = db.wish_info.get(message.author.id)
 						print(wish_info_list)
 						p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wish_info_list[0], wish_info_list[1], wish_info_list[2])
-						prob_fifteen = sum([(math.factorial(15) / (math.factorial(15-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(15-z)) for z in range(1,16)])
-						await channel.send(f"{p}, across 15 rolls: {prob_fifteen}")
+						num_rolls = (int(db.roll_nums.get(message.author.id)) if message.author.id in db.roll_nums.internal_dict else 0) + DEFAULT_ROLL_NUM
+						prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls+1)])
+						await channel.send(f"{np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
 					else:
 						await channel.send("please do $bonus so the bot can get a record of your bonus list")	
 				else:
@@ -515,18 +529,18 @@ async def on_message(message):
 		ubo = None
 		try:
 			mcs = message.content.split()
-			rolls = int(mcs[1]) #make sure to be between 1 and 15
+			rolls = int(mcs[1]) #make sure to be between 1 and default roll num (can grow to num of rolls a player has)
 			total_bet = int(mcs[2]) #make sure to be between 1 and 20
 			if len(mcs) > 3:
 				if (mcs[3][0] != "<"):
 					offset = int(mcs[3])
-					print("offset is ", offset)
+					# print("offset is ", offset)
 				else:
 					if (len(message.mentions) == 1):
 						ubo = message.mentions[0].id
-						print("ubo is", ubo)
+						# print("ubo is", ubo)
 
-			if (rolls + offset) > 15:
+			if (rolls + offset) > DEFAULT_ROLL_NUM:
 				vflag = False
 				await message.add_reaction("❌")
 		except Exception as e:
@@ -537,7 +551,8 @@ async def on_message(message):
 			# await channel.send(f"please put in valid bet and roll numbers")
 
 		if vflag: 
-			if (rolls < 3) or (rolls > 15):
+			max_roll = DEFAULT_ROLL_NUM if ubo is None else DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0)
+			if (rolls < 3) or (rolls > max_roll): 
 				await message.add_reaction("❌")
 				# channel = bot.get_channel(bet_channel_id)
 				# await channel.send(f"please put in a reasonable bet number (1-20)")
@@ -556,7 +571,7 @@ async def on_message(message):
 				uname = message.author.name if message.author.nick is None else message.author.nick
 				
 				if int(db.get_current_balance(message.author.id)) > -10_000:
-					print("genflag", general_flag)
+					# print("genflag", general_flag)
 					if not (general_flag and ubo == None):
 						db.initialize_betting(message.author.id,uname, bet_channel_id, total_bet, rolls, offset, user_bet_on=ubo)
 							# if roll_type in db.roll_types:
@@ -588,7 +603,7 @@ async def on_message(message):
 				elif zuflag: 
 					print("zuflag tripped")
 					await message.add_reaction("⏸️")
-					remaining_rolls = 15 - db.current_roll_sessions[[bet for bet in db.roll_session_zombies if (bet.uid == message.author.id and (ubo == bet.user_bet_on))][0].user_bet_on].rollcount
+					remaining_rolls = DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0) - db.current_roll_sessions[[bet for bet in db.roll_session_zombies if (bet.uid == message.author.id and (ubo == bet.user_bet_on))][0].user_bet_on].rollcount
 					print(remaining_rolls)
 					if remaining_rolls == 11:
 						await message.add_reaction("🕚")
