@@ -168,6 +168,8 @@ class discordbot():
 			self.over_cien.update_total(self.get_over_cien(bs_loc))
 
 		self.last_db_caller = None
+		self.last_wishlistt_caller = None
+		self.wl_info = cached_dict("storage_dicts/wlinfo.json", intkeys=True)
 		
 	def get_over_cien(self, bs_loc):
 		print("calculating...")
@@ -403,10 +405,25 @@ async def on_message(message):
 	
 	if (message.content[0:6] == "$bonus"):
 		db.last_wish_caller = message.author.id
+	
+	if (message.content[0:6] == "$wlt"):
+		db.last_wishlistt_caller = message.author.id
 
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID):
 		e = message.embeds[0]
-		if not e.author is None:
+		if (not e.author.name is None) and (not e.author is None):
+			if ('wishlist' in e.author.name) and (not db.last_wishlistt_caller is None):
+				fs = message.embeds[0].description.split("\n\n")[0]
+				found_num = [int(i) for i in re.findall("\d+",fs)]
+				db.wl_info.set(db.last_wishlistt_caller, {})
+				db.wl_info.get(db.last_wishlistt_caller)['wa'] = found_num[0]
+				db.wl_info.get(db.last_wishlistt_caller)['ha'] = found_num[1]
+				db.wl_info.get(db.last_wishlistt_caller)['wg'] = found_num[2]
+				db.wl_info.get(db.last_wishlistt_caller)['hg'] = found_num[3]
+				db.wl_info.set(db.last_wishlistt_caller, partial_to_full(db.wl_info.get(db.last_wishlistt_caller)))
+				print("wish list info acquired for user", db.last_wishlistt_caller)
+				await message.add_reaction("✅")
+				db.last_wishlistt_caller = None
 			if 'disablelist' in e.author.name:
 				fs = message.embeds[0].description.split("\n\n")[0].split("\n")[0]
 				found_num = [int(i) for i in re.findall("\d+",fs)][1:]
@@ -451,11 +468,13 @@ async def on_message(message):
 				if message.author.id in set(db.disable_lists.internal_dict.keys()):
 					if message.author.id in set(db.wish_info.internal_dict.keys()):
 						wish_info_list = db.wish_info.get(message.author.id)
-						print(wish_info_list)
-						p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wish_info_list[0], wish_info_list[1], wish_info_list[2])
+						wls = int(db.wl_info.get(message.author.id)[roll_type]) if message.author.id in db.wl_info.internal_dict else wish_info_list[0]
+						p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wls, wish_info_list[1], wish_info_list[2])
 						num_rolls = (int(db.roll_nums.get(message.author.id)) if message.author.id in db.roll_nums.internal_dict else 0) + DEFAULT_ROLL_NUM
 						prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls+1)])
-						await channel.send(f"{np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
+						await channel.send(f"for {wls} wished items of type {roll_type}: {np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
+						if wls == wish_info_list[0]:
+							await channel.send(f"note: this calculation assumes all characters on your wish list are of type {roll_type}: to update this, run $wlt and try the commmand again")
 					else:
 						await channel.send("please do $bonus so the bot can get a record of your bonus list")	
 				else:
@@ -475,15 +494,16 @@ async def on_message(message):
 		caller = message.interaction.user.id if not (message.interaction is None) else None
 
 		# if not type(e.author.name) == discord.embeds._EmptyEmbed:
-		if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("disablelist" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
-			bet_channel_id = message.channel.id
-			if "**" in e.description:
-				s = re.search("(?P<word>\*\*\d+\*\*)", e.description)
-				if not s is None:
-					kval = int(s.group().strip("**")) #change for wishes and owneds
-					kname = e.author.name
-					process_bet(kname, kval, message.interaction.name.strip(), bet_channel_id, roller_id = caller)
-					await announce()
+		if not ((e.author is None) or (e.author.name is None)):
+			if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("disablelist" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
+				bet_channel_id = message.channel.id
+				if "**" in e.description:
+					s = re.search("(?P<word>\*\*\d+\*\*)", e.description)
+					if not s is None:
+						kval = int(s.group().strip("**")) #change for wishes and owneds
+						kname = e.author.name
+						process_bet(kname, kval, message.interaction.name.strip(), bet_channel_id, roller_id = caller)
+						await announce()
 
 	if (message.content[0:11] == "$checkprize"):
 		channel = bot.get_channel(message.channel.id)
