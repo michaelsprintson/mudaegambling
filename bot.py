@@ -22,10 +22,12 @@ from collections import defaultdict
 import math
 
 BET_CHANNEL = 967994638919163906
+SPAM_CHANNEL = 980201775950868532
 ADMIN_ID = 138336085703917568
 MUDAE_ID = 432610292342587392
 DEFAULT_PROB = 0.06
 DEFAULT_ROLL_NUM = 15
+SELF_BOT_RUNNING = True
 
 #todo: auto call commands with user id so they never have to again (do this on startup? do it as part of cached dict class?)
 
@@ -326,6 +328,23 @@ async def announce():
 		channel = bot.get_channel(ann[0])
 		await channel.send(ann[1])
 	
+async def get_command(chid, cmd, id):
+	channel = bot.get_channel(chid)
+	if SELF_BOT_RUNNING:
+		await channel.send(f"getting {cmd} information ...")
+		channel = bot.get_channel(SPAM_CHANNEL)
+		await channel.send(f"$botecho ${cmd} {id}")
+		if (cmd == "dl"):
+			db.last_db_caller = id
+		
+		if (cmd == "bonus"):
+			db.last_wish_caller = id
+		
+		if (cmd == "wlt"):
+			db.last_wishlistt_caller = id
+	else:
+		await channel.send(f"please run ${cmd} to view this information")
+
 
 @bot.event
 async def on_message(message):
@@ -357,6 +376,33 @@ async def on_message(message):
 		test = pd.DataFrame(balances).T.sort_values(['bal'], ascending = False).reset_index(drop=True).set_index('name')
 		dfi.export(test,f"{ri}.png")
 		await channel.send(file=discord.File(f"{ri}.png"))
+		
+	if (message.content[0:10] == "$betcancel"):
+		response = db.get_out_early(message.author.id)
+		if response == 1:
+			await message.add_reaction("✅")
+		else:
+			await message.add_reaction("❌")
+	
+	if (message.content[0:8] == "$fakebet"):
+		caller = message.author.id
+		# $fakebet kval kname
+		bet_channel_id = message.channel.id
+		kval = int(message.content.split()[1])
+		kname = message.content.split()[2]
+		rolltype = message.content.split()[3]
+		
+		process_bet(kname, kval, rolltype, bet_channel_id, roller_id = caller)
+		await announce()
+	
+	if (message.content[0:15] == "$adminupdatebal") and (message.author.id == ADMIN_ID):
+		kval = int(message.content.split()[1])
+		kname = message.content.split()[2]
+		db.update_balance(kname, kname, kval)
+
+
+
+
 
 	if (message.author.id == MUDAE_ID):
 		if ("<:addroll:633217436044492801>" in message.content):
@@ -404,13 +450,13 @@ async def on_message(message):
 			await message.add_reaction("✅")
 			db.total_last_scraped = True
 
-	if (message.content[0:3] == "$dl") or (message.content[0:12] == "$disablelist"):
+	if (message.content == "$dl") or (message.content == "$disablelist"):
 		db.last_db_caller = message.author.id
 	
-	if (message.content[0:6] == "$bonus"):
+	if (message.content == "$bonus"):
 		db.last_wish_caller = message.author.id
 	
-	if (message.content[0:6] == "$wlt"):
+	if (message.content == "$wlt"):
 		db.last_wishlistt_caller = message.author.id
 
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID):
@@ -442,6 +488,13 @@ async def on_message(message):
 				await message.add_reaction("✅")
 				db.last_db_caller = None
 
+
+
+
+
+
+
+
 	if (message.content[0:10] == "$checkprob"):
 		channel = bot.get_channel(message.channel.id)
 		
@@ -449,25 +502,37 @@ async def on_message(message):
 		bet_channel_id = message.channel.id
 		mcs = message.content.split()
 		roll_type = mcs[1]
+
 		if len(mcs) > 2:
 			rolls = int(mcs[2])
 			value = int(mcs[3])
-		if db.total_last_scraped:
+
+		infoaqbool = False
+		if not db.total_last_scraped:
+			await get_command(bet_channel_id, "left", None)
+			sleep(2)
+			infoaqbool = True
+		if not message.author.id in set(db.disable_lists.internal_dict.keys()):
+			await get_command(bet_channel_id, "dl", message.author.id)
+			sleep(2)
+			infoaqbool = True
+
+
+		if infoaqbool:
+			await channel.send(f"please repeat the command now that all information is accessible to the bot")
+		else:
 			if roll_type in db.roll_types:
-				if message.author.id in set(db.disable_lists.internal_dict.keys()):
-					p = db.get_prob_for_bet(roll_type, db.disable_lists.get(message.author.id))
-					if len(mcs) > 2:
-						b = db.calc_bet_multiplier(value, p, rolls) * (value / rolls)
-							
-						await channel.send(f"{np.around(p*100, decimals=4)}, bet prize: {int(b)}")
-					else:
-						await channel.send(f"{np.around(p*100, decimals=4)}")
+				
+				p = db.get_prob_for_bet(roll_type, db.disable_lists.get(message.author.id))
+				if len(mcs) > 2:
+					b = db.calc_bet_multiplier(value, p, rolls) * (value / rolls)
+						
+					await channel.send(f"{np.around(p*100, decimals=4)}, bet prize: {int(b)}")
 				else:
-					await channel.send("please do $dl so the bot can get a record of your disablelist")
+					await channel.send(f"{np.around(p*100, decimals=4)}")
+
 			else:
 				await channel.send(f"please input a valid roll type (dont use $)")
-		else:
-			await channel.send(f"please do $left so the bot can get the values")
 	
 	if (message.content[0:14] == "$checkwishprob"):
 		channel = bot.get_channel(message.channel.id)
@@ -476,27 +541,49 @@ async def on_message(message):
 		bet_channel_id = message.channel.id
 		mcs = message.content.split()
 		roll_type = mcs[1]
-		
-		if db.total_last_scraped:
+		wish_list_num = int(mcs[2]) if len(mcs) == 3 else None
+
+		infoaqbool = False
+		if not db.total_last_scraped:
+			await get_command(bet_channel_id, "left", None)
+			sleep(2)
+			infoaqbool = True
+		if not message.author.id in set(db.disable_lists.internal_dict.keys()):
+			await get_command(bet_channel_id, "dl", message.author.id)
+			sleep(2)
+			infoaqbool = True
+		if not message.author.id in set(db.wish_info.internal_dict.keys()):
+			await get_command(bet_channel_id, "bonus", message.author.id)
+			sleep(2)
+			infoaqbool = True
+		if not message.author.id in set(db.wl_info.internal_dict.keys()):
+			await get_command(bet_channel_id, "wlt", message.author.id)
+			sleep(2)
+			infoaqbool = True
+
+		if infoaqbool:
+			await channel.send(f"please repeat the command now that all information is accessible to the bot")
+		else:
 			if roll_type in db.roll_types:
-				if message.author.id in set(db.disable_lists.internal_dict.keys()):
-					if message.author.id in set(db.wish_info.internal_dict.keys()):
-						wish_info_list = db.wish_info.get(message.author.id)
-						wls = int(db.wl_info.get(message.author.id)[roll_type]) if message.author.id in db.wl_info.internal_dict else wish_info_list[0]
-						p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wls, wish_info_list[1], wish_info_list[2])
-						num_rolls = (int(db.roll_nums.get(message.author.id)) if message.author.id in db.roll_nums.internal_dict else 0) + DEFAULT_ROLL_NUM
-						prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls+1)])
-						await channel.send(f"for {wls} wished items of type {roll_type}: {np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
-						if (wls == wish_info_list[0]) and (not message.author.id in db.wl_info.internal_dict):
-							await channel.send(f"note: this calculation assumes all characters on your wish list are of type {roll_type}: to update this, run $wlt and try the commmand again")
-					else:
-						await channel.send("please do $bonus so the bot can get a record of your bonus list")	
-				else:
-					await channel.send("please do $dl so the bot can get a record of your disablelist")
+				wish_info_list = db.wish_info.get(message.author.id)
+				wls = int(db.wl_info.get(message.author.id)[roll_type]) if wish_list_num is None else wish_list_num
+				p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wls, wish_info_list[1], wish_info_list[2])
+				num_rolls = (int(db.roll_nums.get(message.author.id)) if message.author.id in db.roll_nums.internal_dict else 0) + DEFAULT_ROLL_NUM
+				prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls+1)])
+				await channel.send(f"for {wls} wished items of type {roll_type}: {np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
 			else:
 				await channel.send(f"please input a valid roll type (dont use $)")
-		else:
-			await channel.send(f"please do $left so the bot can get the values")
+
+
+
+
+
+
+
+
+
+
+
 
    
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID): #and (message.author.name == "Mudae"): #make sure this is only from mudae
@@ -508,7 +595,7 @@ async def on_message(message):
 		caller = message.interaction.user.id if not (message.interaction is None) else None
 
 		# if not type(e.author.name) == discord.embeds._EmptyEmbed:
-		if not ((e.author is None) or (e.author.name is None)):
+		if not ((e.author is None) or (e.author.name is None) or (message.interaction) is None):
 			if not (("Like Rank" in desc or "Claim Rank" in desc) or ("Custom" in desc) or ("Harem size:" in desc) or ("Kakera" in desc) or ("TOP 1000" in e.author.name) or ("kakera" in e.author.name) or ("Kakera" in e.author.name) or ("harem" in e.author.name) or ("disablelist" in e.author.name) or ("Total value:" in desc)): #really shit way to make sure it was a roll
 				bet_channel_id = message.channel.id
 				if "**" in e.description:
@@ -519,28 +606,7 @@ async def on_message(message):
 						process_bet(kname, kval, message.interaction.name.strip(), bet_channel_id, roller_id = caller)
 						await announce()
 
-	if (message.content[0:10] == "$betcancel"):
-		response = db.get_out_early(message.author.id)
-		if response == 1:
-			await message.add_reaction("✅")
-		else:
-			await message.add_reaction("❌")
 	
-	if (message.content[0:8] == "$fakebet"):
-		caller = message.author.id
-		# $fakebet kval kname
-		bet_channel_id = message.channel.id
-		kval = int(message.content.split()[1])
-		kname = message.content.split()[2]
-		rolltype = message.content.split()[3]
-		
-		process_bet(kname, kval, rolltype, bet_channel_id, roller_id = caller)
-		await announce()
-	
-	if (message.content[0:15] == "$adminupdatebal") and (message.author.id == ADMIN_ID):
-		kval = int(message.content.split()[1])
-		kname = message.content.split()[2]
-		db.update_balance(kname, kname, kval)
 
 	if (message.content[0:5] == "$bet "):
 		# $bet rolls val
