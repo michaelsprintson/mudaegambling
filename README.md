@@ -33,7 +33,8 @@ to check balance: $checkbalance
 
 to check leaderboard: $leaderboard
 
-to check the prize per win: $checkprize [roll #] [total bet size] 
+to check the prize per win: $checkprob [roll type] [roll #] [total bet size] 
    note: not limited in the same way as bet so you can go wild with values 
+   note: roll type must be accepted by mudae (hx, wa, mg, etc)
 
 For returning users: Note that bet-per-roll has been changed to total bet! Previously, putting 400 in $bet meant 400 per roll, now it means 400 total across the number of rolls you put in.
