@@ -80,10 +80,11 @@ class cached_dict():
 		if os.path.exists(storage_loc):
 			stored_dict = json.load(open(storage_loc, 'r'))
 			for k,d in stored_dict.items():
-				if intkeys:
-					self.internal_dict[int(k)] = d
-				else:
-					self.internal_dict[k] = d
+				if not k == "null":
+					if intkeys:
+						self.internal_dict[int(k)] = d
+					else:
+						self.internal_dict[k] = d
 	
 	def update_total(self, new_dict):
 		self.internal_dict = new_dict
@@ -108,6 +109,7 @@ class rollinstance():
 			self.rollcount += 1
 			# print("rollcount updated", self.rollcount)
 			if self.rollcount == (DEFAULT_ROLL_NUM + self.rollbonus):
+				# print("returning 1, current rollcount = ", self.rollcount)
 				return 1
 		return 0
 
@@ -175,6 +177,7 @@ class discordbot():
 		self.last_db_caller = None
 		self.last_wishlistt_caller = None
 		self.wl_info = cached_dict("storage_dicts/wlinfo.json", intkeys=True)
+		self.riddleguesses = cached_dict("storage_dicts/riddleguesses.json", intkeys=True)
 		
 	def get_over_cien(self, bs_loc):
 		print("calculating...")
@@ -352,7 +355,7 @@ async def on_message(message):
 
 	if (message.content[0:10] == "$adminecho") and (message.author.id == ADMIN_ID):
 		kname = reduce(lambda a,b:a+" "+b, message.content.split()[1:])
-		channel = bot.get_channel(978287487699005521)
+		channel = bot.get_channel(967994638919163906)
 		await channel.send(f"{kname}")
 
 	if (message.content[0:9] == "$buyclaim"):
@@ -400,8 +403,28 @@ async def on_message(message):
 		kname = message.content.split()[2]
 		db.update_balance(kname, kname, kval)
 
+	if (message.content[0:6] == "$guess"):
+		if message.author.id in set(db.riddleguesses.internal_dict.keys()):
+			db.riddleguesses.set(message.author.id, {'name':message.author.display_name, 'guess_count': 1 + int(db.riddleguesses.get(message.author.id)['guess_count'])})
+		else:
+			db.riddleguesses.set(message.author.id, {'name':message.author.display_name, 'guess_count':1})
+		kname = message.content[6:]
+		if len(kname) < 20:
+			if ('rick' in kname) and ("roll" in kname):
+				await message.add_reaction("✅")
+			else:
+				await message.add_reaction("❌")
+		else:
+			await message.add_reaction("❌")
 
 
+	if (message.content[0:14] == "$riddlecounts"):
+		channel = bot.get_channel(message.channel.id)
+		balances = json.load(open("storage_dicts/riddleguesses.json", 'r'))
+		ri = random.randrange(0,1000000)
+		test = pd.DataFrame(balances).T.sort_values(['guess_count'], ascending = False).reset_index(drop=True).set_index('name')#.reset_index(drop=True).set_index('index')
+		dfi.export(test,f"pic/{ri}.png")
+		await channel.send(file=discord.File(f"pic/{ri}.png"))
 
 
 	if (message.author.id == MUDAE_ID):
@@ -627,8 +650,8 @@ async def on_message(message):
 					if (len(message.mentions) == 1):
 						ubo = message.mentions[0].id
 						# print("ubo is", ubo)
-
-			if (rolls + offset) > DEFAULT_ROLL_NUM:
+			max_roll = DEFAULT_ROLL_NUM if ubo is None else DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0)
+			if (rolls + offset) > max_roll:
 				vflag = False
 				await message.add_reaction("❌")
 		except Exception as e:
@@ -639,7 +662,8 @@ async def on_message(message):
 			# await channel.send(f"please put in valid bet and roll numbers")
 
 		if vflag: 
-			max_roll = DEFAULT_ROLL_NUM if ubo is None else DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0)
+			
+			print(max_roll)
 			if (rolls < 3) or (rolls > max_roll): 
 				await message.add_reaction("❌")
 				# channel = bot.get_channel(bet_channel_id)
@@ -649,6 +673,14 @@ async def on_message(message):
 				await message.add_reaction("❌")
 				# channel = bot.get_channel(bet_channel_id)
 				# await channel.send(f"please put in a reasonable bet per roll (2-100)")
+				vflag = False
+
+		
+		t = [(DEFAULT_ROLL_NUM + rs.rollbonus) - rs.rollcount for n, rs in db.current_roll_sessions.items() if (n == ubo)]
+		# print(t)
+		if len(t) > 0:
+			# print(t[0])
+			if rolls > t[0]:
 				vflag = False
 
 		if vflag:
