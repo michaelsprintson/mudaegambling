@@ -637,7 +637,7 @@ async def on_message(message):
 		channel = bot.get_channel(message.channel.id)
 		vflag = True
 		offset = 0
-		ubo = None
+		ubo = message.mentions[0].id if (len(message.mentions) == 1) else None
 		try:
 			mcs = message.content.split()
 			rolls = int(mcs[1]) #make sure to be between 1 and default roll num (can grow to num of rolls a player has)
@@ -647,8 +647,8 @@ async def on_message(message):
 					offset = int(mcs[3])
 					# print("offset is ", offset)
 				else:
-					if (len(message.mentions) == 1):
-						ubo = message.mentions[0].id
+					print("grabbing ubo")
+					
 						# print("ubo is", ubo)
 			max_roll = DEFAULT_ROLL_NUM if ubo is None else DEFAULT_ROLL_NUM + (int(db.roll_nums.get(ubo)) if ubo in db.roll_nums.internal_dict else 0)
 			if (rolls + offset) > max_roll:
@@ -660,10 +660,9 @@ async def on_message(message):
 			await message.add_reaction("❌")
 			# channel = bot.get_channel(bet_channel_id)
 			# await channel.send(f"please put in valid bet and roll numbers")
-
+		print(f"offset - {offset}, ubo - {ubo}")
 		if vflag: 
 			
-			print(max_roll)
 			if (rolls < 3) or (rolls > max_roll): 
 				await message.add_reaction("❌")
 				# channel = bot.get_channel(bet_channel_id)
@@ -695,7 +694,7 @@ async def on_message(message):
 					if not (general_flag and ubo == None):
 						db.initialize_betting(message.author.id,uname, bet_channel_id, total_bet, rolls, offset, user_bet_on=ubo)
 							# if roll_type in db.roll_types:
-						dl = ubo in set(db.disable_lists.internal_dict.keys())
+						dl = int(ubo) in [int(i) for i in list(db.disable_lists.internal_dict.keys())]
 						if not dl:
 							await channel.send(f"Note: until the person bet on calls $dl, all rolls for this bet will be handled with default probability")
 						if not db.total_last_scraped:
