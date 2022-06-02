@@ -131,11 +131,11 @@ class betinstance():
 		self.winbank = []
 		self.offset = offset
 		self.user_bet_on = user_bet_on
-	def roll(self, kval, kname, roll_type, bettor_id):
+	def roll(self, kval, kname, roll_type, roller_id):
 		
 		# print("betting on ", self.user_bet_on)
 		# print("bettor", bettor_id)
-		if (self.rollcount < self.rollmax) and (True if self.user_bet_on is None else (self.user_bet_on == bettor_id)):
+		if (self.rollcount < self.rollmax) and (True if self.user_bet_on is None else (self.user_bet_on == roller_id)):
 			print(f"bet registered - {kval}, current state - {self.rollcount, self.wincount, self.winbank}")
 			self.rollcount += 1
 			# print(self.offset)
@@ -143,7 +143,8 @@ class betinstance():
 				# print('bet betted')
 				# print(self.name, " won!")
 				self.wincount += 1
-				self.winbank.append(roll_type)
+				p = db.get_prob_for_bet(roll_type, db.disable_lists.get(roller_id)) if roller_id in db.disable_lists.internal_dict else DEFAULT_PROB
+				self.winbank.append(p)
 		if self.rollcount == self.rollmax:
 			print("added to zombie at roll", self.rollcount)
 			# print("betting concluded, wins = ", self.wincount, " ", self.winbank)
@@ -293,10 +294,10 @@ def process_bet(kname, kval, roll_type, bet_channel_id, accepted_bet_channel = B
 			rolling_win_count = 0			
 			if db.total_last_scraped:
 				# if roll_type in db.roll_types:
-				if roller_id in set(db.disable_lists.internal_dict.keys()):
-					for rt in bet.winbank:
-						p = db.get_prob_for_bet(rt, db.disable_lists.get(roller_id))
-						rolling_win_count += db.calc_bet_multiplier(bet.betval, p, bet.rnum) * (bet.betval / bet.rnum)
+				for p in bet.winbank:
+					print(bet.betval, p, bet.rnum)
+					print("won an additional", db.calc_bet_multiplier(bet.betval, p, bet.rnum) * (bet.betval / bet.rnum), "from", p)
+					rolling_win_count += db.calc_bet_multiplier(bet.betval, p, bet.rnum) * (bet.betval / bet.rnum)
 					
 			
 			# print(f"probability for {roll_type} is {p}, prize is {prize}")
@@ -395,7 +396,7 @@ async def on_message(message):
 		kname = message.content.split()[2]
 		rolltype = message.content.split()[3]
 		
-		process_bet(kname, kval, rolltype, bet_channel_id, roller_id = caller)
+		process_bet(kname, kval, rolltype, bet_channel_id, roller_id = 44444)
 		await announce()
 	
 	if (message.content[0:15] == "$adminupdatebal") and (message.author.id == ADMIN_ID):
@@ -694,9 +695,10 @@ async def on_message(message):
 					if not (general_flag and ubo == None):
 						db.initialize_betting(message.author.id,uname, bet_channel_id, total_bet, rolls, offset, user_bet_on=ubo)
 							# if roll_type in db.roll_types:
-						dl = int(ubo) in [int(i) for i in list(db.disable_lists.internal_dict.keys())]
-						if not dl:
-							await channel.send(f"Note: until the person bet on calls $dl, all rolls for this bet will be handled with default probability")
+						if not ubo is None:
+							dl = int(ubo) in [int(i) for i in list(db.disable_lists.internal_dict.keys())]
+							if not dl:
+								await channel.send(f"Note: until the person bet on calls $dl, all rolls for this bet will be handled with default probability")
 						if not db.total_last_scraped:
 							await channel.send(f"Note: until $left is called, all rolls for this bet will be handled with default probability")
 						print(f"betting started for user {message.author.id}" + ("" if ubo is None else f" on {ubo}"))
