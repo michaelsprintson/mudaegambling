@@ -21,6 +21,8 @@ import ast
 from collections import defaultdict
 import math
 
+from traitlets import default
+
 BET_CHANNEL = 967994638919163906
 SPAM_CHANNEL = 980201775950868532
 ADMIN_ID = 138336085703917568
@@ -95,6 +97,8 @@ class cached_dict():
 		json.dump(self.internal_dict, open(self.storage_loc, 'w'))
 	
 	def get(self, item):
+		if not item in self.internal_dict:
+			self.internal_dict[item] = 0
 		return self.internal_dict[item]
 
 class rollinstance(): 
@@ -179,6 +183,10 @@ class discordbot():
 		self.last_wishlistt_caller = None
 		self.wl_info = cached_dict("storage_dicts/wlinfo.json", intkeys=True)
 		self.riddleguesses = cached_dict("storage_dicts/riddleguesses.json", intkeys=True)
+
+		self.armandoemeraldtaxes = cached_dict("storage_dicts/armandotaxes.json", intkeys=True)
+		self.totaltaxpaid = cached_dict("storage_dicts/totaltaxes.json", intkeys=True)
+		self.disablebot = cached_dict("storage_dicts/ser_dl.json")
 		
 	def get_over_cien(self, bs_loc):
 		print("calculating...")
@@ -210,14 +218,15 @@ class discordbot():
 	
 	def get_prob_for_wish(self, bet_type, dl, wls, wb, fwb, wp = 5000):
 		# print('wp', wp)
-		# print('wls', wls)
+		print('wls', wls)
 		# print('wb', wb)
 		# print("fwb", fwb)
 		# print('left', self.left[bet_type])
 		# print('total', self.total[bet_type])
 		# print('disable', dl[bet_type])
 
-
+		if wls == 0:
+			return 0
 		return np.around((1/wp) + (wls*(1 + (wb/100)) + (fwb/100)) / self.calc_pool(self.left.get(bet_type), dl[bet_type], self.total.get(bet_type), 6), decimals = 4)
 
 
@@ -482,12 +491,22 @@ async def on_message(message):
 	
 	if (message.content == "$wlt"):
 		db.last_wishlistt_caller = message.author.id
+	elif (message.content[0:4] == "$wlt") and (len(message.mentions) == 0):
+		db.last_wishlistt_caller = int(message.content.split(" ")[1])
 
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID):
 		e = message.embeds[0]
 		if (not e.author.name is None) and (not e.author is None):
 			if ('wishlist' in e.author.name) and (not db.last_wishlistt_caller is None):
 				fs = message.embeds[0].description.split("\n\n")[0]
+				ser_dict = defaultdict(int)
+				charstrings = message.embeds[0].description.split("\n\n")[1].split("\n")
+				for charstring in charstrings:
+					find_ser = re.search("\*\* - (?P<sername>[^;]*) \*\(", charstring)
+					if not find_ser is None:
+						sername = find_ser.group("sername")
+						ser_dict[sername] += 1
+				db.disablebot.set(db.last_wishlistt_caller, ser_dict)
 				found_num = [int(i) for i in re.findall("\d+",fs)]
 				db.wl_info.set(db.last_wishlistt_caller, {})
 				db.wl_info.get(db.last_wishlistt_caller)['wa'] = found_num[0]
@@ -593,7 +612,7 @@ async def on_message(message):
 				wls = int(db.wl_info.get(message.author.id)[roll_type]) if wish_list_num is None else wish_list_num
 				p = db.get_prob_for_wish(roll_type, db.disable_lists.get(message.author.id), wls, wish_info_list[1], wish_info_list[2])
 				num_rolls = (int(db.roll_nums.get(message.author.id)) if message.author.id in db.roll_nums.internal_dict else 0) + DEFAULT_ROLL_NUM
-				prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls+1)])
+				prob_fifteen = sum([(math.factorial(num_rolls) / (math.factorial(num_rolls-z) * math.factorial(z))) * ((p)**z) * ((1-p)**(num_rolls-z)) for z in range(1,num_rolls)])
 				await channel.send(f"for {wls} wished items of type {roll_type}: {np.around(p*100, decimals=4)} percent, across {num_rolls} rolls: {np.around(prob_fifteen*100, decimals=4)} percent")
 			else:
 				await channel.send(f"please input a valid roll type (dont use $)")
@@ -602,12 +621,42 @@ async def on_message(message):
 
 
 
+	## change these two to support multiple taxees
+	## add the ability to grab all users in a channel and generate id to username mapping
+	if (message.content[:16] == "$adminresettaxes") and (message.author.id == ADMIN_ID):
+		id_to_reset = int(message.content[17:])
+		db.armandoemeraldtaxes.set(id_to_reset, 0)
 
 
+	if (message.content == "$checktaxes"):
+		if (message.author.id == ADMIN_ID):
+			await message.reply(content = db.armandoemeraldtaxes.internal_dict.__repr__())
+		else:
+			await message.reply(content = db.armandoemeraldtaxes.get(message.author.id))
 
+	if (message.content == "$totaltaxpaid"):
+		if (message.author.id == ADMIN_ID):
+			await message.reply(content = db.totaltaxpaid.internal_dict.__repr__())
+		else:
+			await message.reply(content = db.totaltaxpaid.get(message.author.id))
 
-
-
+	if (message.author.id == MUDAE_ID) and ("(Emerald IV bonus)" in message.content):
+		s = re.search("\*\*\+(?P<wlslots>\d+)\*\*", message.content)
+		if not s is None:
+			val = int(s.group("wlslots"))
+			if ("armadillo" in message.content):
+				taxes = np.around(val * 0.20)
+				db.totaltaxpaid.set(279870739451084800, db.totaltaxpaid.get(279870739451084800) + taxes)
+				db.armandoemeraldtaxes.set(279870739451084800, db.armandoemeraldtaxes.get(279870739451084800) + taxes)
+			if ("lilabeth" in message.content):
+				taxes = np.around(val * 0.50)
+				db.totaltaxpaid.set(469706380220170240, db.totaltaxpaid.get(469706380220170240) + taxes)
+				db.armandoemeraldtaxes.set(469706380220170240, db.armandoemeraldtaxes.get(469706380220170240) + taxes)
+			if ("Chaosfnog" in message.content):
+				taxes = np.around(val * 0.50)
+				db.totaltaxpaid.set(88020501930209280, db.totaltaxpaid.get(88020501930209280) + taxes)
+				db.armandoemeraldtaxes.set(88020501930209280, db.armandoemeraldtaxes.get(88020501930209280) + taxes)
+			
 
    
 	if (len(message.embeds) > 0) and (message.author.id == MUDAE_ID): #and (message.author.name == "Mudae"): #make sure this is only from mudae
